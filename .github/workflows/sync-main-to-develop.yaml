@@ -1,0 +1,82 @@
+name: Sync main → develop
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to push the sync branch
+  pull-requests: write   # needed to open/edit PRs
+
+concurrency:
+  group: sync-main-to-develop
+  cancel-in-progress: true
+
+jobs:
+  open-sync-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch branches
+        run: |
+          git fetch origin +refs/heads/main:refs/remotes/origin/main
+          git fetch origin +refs/heads/develop:refs/remotes/origin/develop || echo "No develop branch yet"
+
+      - name: Skip if no diff (main vs develop)
+        id: diffcheck
+        run: |
+          # If develop doesn't exist yet, we must create the PR.
+          if git show-ref --verify --quiet refs/remotes/origin/develop; then
+            if git diff --quiet origin/develop..origin/main; then
+              echo "no_diff=true" >> $GITHUB_OUTPUT
+            else
+              echo "no_diff=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "no_diff=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Nothing to sync
+        if: steps.diffcheck.outputs.no_diff == 'true'
+        run: echo "develop is already up to date with main."
+
+      - name: Create/update sync branch at main tip
+        if: steps.diffcheck.outputs.no_diff == 'false'
+        run: |
+          git checkout -B sync/main-to-develop origin/main
+          git push --force --set-upstream origin sync/main-to-develop
+
+      - name: Open PR (or reuse existing)
+        if: steps.diffcheck.outputs.no_diff == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # If an open PR from sync/main-to-develop → develop already exists, do nothing.
+          existing_count=$(gh pr list --base develop --head sync/main-to-develop --state open --json number --jq 'length' || echo 0)
+          if [ "$existing_count" -gt 0 ]; then
+            echo "A sync PR is already open; branch was force-pushed with latest main."
+            exit 0
+          fi
+
+          gh pr create \
+            --base develop \
+            --head sync/main-to-develop \
+            --title "Sync main → develop" \
+            --body "Automated PR to merge changes from \`main\` into \`develop\` after a push to \`main\`."
+
+          # Optional niceties:
+          # gh pr edit --add-label "sync"
+          # gh pr edit --add-reviewer your-github-handle
+          # If 'Require linear history' on develop, consider enabling auto-merge with rebase:
+          # gh pr merge --auto --rebase
+
