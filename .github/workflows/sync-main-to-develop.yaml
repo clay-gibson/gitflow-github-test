@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write        # needed to push the sync branch
-  pull-requests: write   # needed to open/edit PRs
+  contents: write # needed to push the sync branch
+  pull-requests: write # needed to open/edit PRs
 
 concurrency:
   group: sync-main-to-develop
@@ -59,7 +59,7 @@ jobs:
           # gh pr edit --add-reviewer your-github-handle
           # If 'Require linear history' on develop, consider enabling auto-merge with rebase:
           # gh pr merge --auto --rebase
-      
+
       - name: Enable auto-merge if conflict-free
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
