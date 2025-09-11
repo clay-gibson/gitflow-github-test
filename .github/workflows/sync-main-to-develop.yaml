@@ -34,7 +34,7 @@ jobs:
 
       - name: Create/update sync branch at main tip
         run: |
-          git checkout -B sync/main-to-develop origin/main
+          git checkout origin/main
           git push --force --set-upstream origin sync/main-to-develop
 
       - name: Open PR (or reuse existing)
