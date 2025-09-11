@@ -33,13 +33,11 @@ jobs:
           git fetch origin +refs/heads/develop:refs/remotes/origin/develop || echo "No develop branch yet"
 
       - name: Create/update sync branch at main tip
-        if: steps.diffcheck.outputs.no_diff == 'false'
         run: |
           git checkout -B sync/main-to-develop origin/main
           git push --force --set-upstream origin sync/main-to-develop
 
       - name: Open PR (or reuse existing)
-        if: steps.diffcheck.outputs.no_diff == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -63,7 +61,6 @@ jobs:
           # gh pr merge --auto --rebase
 
       - name: Enable auto-merge if conflict-free
-        if: steps.diffcheck.outputs.no_diff == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.openpr.outputs.pr_number }}
