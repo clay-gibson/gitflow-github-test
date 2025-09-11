@@ -35,14 +35,14 @@ jobs:
       - name: Create/update sync branch at main tip
         run: |
           git checkout origin/main
-          git push --force --set-upstream origin sync/main-to-develop
+          git push --force --set-upstream origin main
 
       - name: Open PR (or reuse existing)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # If an open PR from sync/main-to-develop → develop already exists, do nothing.
-          existing_count=$(gh pr list --base develop --head sync/main-to-develop --state open --json number --jq 'length' || echo 0)
+          # If an open PR from main → develop already exists, do nothing.
+          existing_count=$(gh pr list --base develop --head main --state open --json number --jq 'length' || echo 0)
           if [ "$existing_count" -gt 0 ]; then
             echo "A sync PR is already open; branch was force-pushed with latest main."
             exit 0
@@ -50,7 +50,7 @@ jobs:
 
           gh pr create \
             --base develop \
-            --head sync/main-to-develop \
+            --head main \
             --title "Sync main → develop" \
             --body "Automated PR to merge changes from \`main\` into \`develop\` after a push to \`main\`."
 
