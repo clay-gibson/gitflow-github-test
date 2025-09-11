@@ -32,24 +32,6 @@ jobs:
           git fetch origin +refs/heads/main:refs/remotes/origin/main
           git fetch origin +refs/heads/develop:refs/remotes/origin/develop || echo "No develop branch yet"
 
-      # - name: Skip if no diff (main vs develop)
-      #   id: diffcheck
-      #   run: |
-      #     # If develop doesn't exist yet, we must create the PR.
-      #     if git show-ref --verify --quiet refs/remotes/origin/develop; then
-      #       if git diff --quiet origin/develop..origin/main; then
-      #         echo "no_diff=true" >> $GITHUB_OUTPUT
-      #       else
-      #         echo "no_diff=false" >> $GITHUB_OUTPUT
-      #       fi
-      #     else
-      #       echo "no_diff=false" >> $GITHUB_OUTPUT
-      #     fi
-
-      - name: Nothing to sync
-        if: steps.diffcheck.outputs.no_diff == 'true'
-        run: echo "develop is already up to date with main."
-
       - name: Create/update sync branch at main tip
         if: steps.diffcheck.outputs.no_diff == 'false'
         run: |
