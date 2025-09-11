@@ -63,7 +63,6 @@ jobs:
           # gh pr merge --auto --rebase
       
       - name: Enable auto-merge if conflict-free
-        if: steps.diffcheck.outputs.no_diff == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.openpr.outputs.pr_number }}
