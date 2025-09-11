@@ -1,0 +1,18 @@
+name: enforce-source-branch
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [opened, reopened, synchronize, edited, ready_for_review]
+
+jobs:
+  branch-source-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Allow only release/* or hotfix/*
+        run: |
+          echo "PR head ref: ${{ github.head_ref }}"
+          if [[ ! "${{ github.head_ref }}" =~ ^(release/|hotfix/) ]]; then
+            echo "PRs into main must come from release/* or hotfix/* (got '${{ github.head_ref }}')"
+            exit 1
+          fi
