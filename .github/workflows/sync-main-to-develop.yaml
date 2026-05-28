@@ -181,24 +181,6 @@ jobs:
             [[ "$state" =~ ^(UNKNOWN|UNSTABLE)$ ]] && sleep 5 || break
           done
 
-      - name: Post governor success status for sync PR
-        if: env.HAS_DIFF == 'true' && env.PR_NUMBER != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          SYNC_BRANCH: ${{ steps.syncmeta.outputs.SYNC_BRANCH }}
-        run: |
-          set -euo pipefail
-
-          # Get the HEAD SHA of the sync branch (what the ruleset checks against)
-          HEAD_SHA="$(gh api "repos/${REPO}/git/ref/heads/${SYNC_BRANCH}" --jq '.object.sha')"
-
-          gh api --method POST \
-            "repos/${REPO}/statuses/${HEAD_SHA}" \
-            -f state='success' \
-            -f context='governor' \
-            -f description='Sync PR: main → develop auto-approved by sync workflow'
-
       - name: Enable auto-merge (merge commit) with retry
         if: env.HAS_DIFF == 'true' && env.PR_NUMBER != ''
         env:
