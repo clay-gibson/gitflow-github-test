@@ -1,0 +1,92 @@
+# ===============================================
+# PR Governor Workflow:
+# - gate PRs into main by source branch
+# - gate PRs into develop by source branch
+# - advise squash for task PRs into develop (not main, sync/*)
+# - skip advisory into develop for exempt heads (draft, main, sync/*)
+# 
+# Repository settings must:
+# - allow both squash merges (for ticket PRs) and merge commits (for main → develop)
+# - enable auto-merge
+# ===============================================
+
+name: PR Governor
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review, labeled, unlabeled]
+    branches: [ main, develop ]
+
+permissions:
+  contents: write
+  pull-requests: write
+  checks: read
+  actions: read
+
+# Only one run per PR; cancel in-progress runs on new events
+concurrency:
+  group: pr-governor-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  governor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Echo context
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          echo "base=$BASE"
+          echo "head=$HEAD"
+          echo "draft=$DRAFT"
+
+      - name: Gate PRs into main; only allow release/* or hotfix/*
+        if: ${{ github.event.pull_request.base.ref == 'main' }}
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          HEAD="${HEAD_REF}"
+          if [[ ! "$HEAD" =~ ^(release\/|hotfix\/) ]]; then
+            echo "::error::PRs into main must come from release/* or hotfix/* (got '$HEAD')."
+            exit 1
+          fi
+          echo "OK: $HEAD -> main allowed"
+
+      - name: Gate PRs into develop; block release/hotfix into develop (use main instead)
+        if: ${{ github.event.pull_request.base.ref == 'develop' }}
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          HEAD="${HEAD_REF}"
+          BASE="${BASE_REF}"
+          if [[ "$HEAD" =~ ^(release\/|hotfix\/) ]]; then
+            echo "::error::Release/Hotfix branches must target 'main' (got: '$HEAD' -> '$BASE'). Merge to main; the sync workflow will propagate to develop."
+            exit 1
+          fi
+          echo "OK: $HEAD -> $BASE (not a release/hotfix source)"
+
+      - name: Advise squash for develop PRs; do not auto-merge
+        if: >-
+          ${{ github.event.pull_request.base.ref == 'develop' &&
+              github.event.pull_request.draft == false &&
+              github.event.pull_request.head.ref != 'main' &&
+              !startsWith(github.event.pull_request.head.ref, 'sync/') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR" --repo "$REPO" --body \
+            "✅ Checks passed. **Policy:** Once this PR is approved, please **squash and merge** this PR into \`develop\`."
+
+      - name: Note skips for drafts and exempt heads
+        if: >-
+          ${{ github.event.pull_request.base.ref == 'develop' &&
+              (github.event.pull_request.draft == true ||
+               github.event.pull_request.head.ref == 'main' ||
+               startsWith(github.event.pull_request.head.ref, 'sync/')) }}
+        run: echo "Skipping advisory for draft or exempt head."
