@@ -167,34 +167,3 @@ jobs:
           fi
 
           echo "PR_NUMBER=${PR_NUMBER}" >> "${GITHUB_ENV}"
-
-      - name: Wait for mergeability to be confirmed (avoid UNSTABLE/UNKNOWN flakey states)
-        if: env.HAS_DIFF == 'true' && env.PR_NUMBER != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          for i in {1..24}; do
-            state=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergeStateStatus --jq .mergeStateStatus)
-            echo "mergeStateStatus=$state"
-            [[ "$state" =~ ^(UNKNOWN|UNSTABLE)$ ]] && sleep 5 || break
-          done
-
-      - name: Enable auto-merge (merge commit) with retry
-        if: env.HAS_DIFF == 'true' && env.PR_NUMBER != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          for i in {1..6}; do
-            if gh pr merge "$PR_NUMBER" --repo "$REPO" --merge --auto; then
-              echo "Auto-merge enabled (merge commit)."
-              exit 0
-            fi
-            echo "Auto-merge not enableable yet (attempt $i); retrying in 10s..."
-            sleep 10
-          done
-          echo "::error::Failed to enable auto-merge after retries."
-          exit 1
