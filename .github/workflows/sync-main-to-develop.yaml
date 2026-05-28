@@ -1,101 +1,200 @@
-name: Sync main → develop
+# ==============================
+# Sync main branch to develop branch
+# 
+# Every release or hotfix merged into main will
+# auto-create one rolling sync PR and
+# arm auto-merge to merge commit to develop.
+#
+# The PR body includes:
+# - latest commit on main (with link to PR or commit)
+# - full changelog link between previous sync and current main
+#
+# If no changes between main and develop, no PR is created.
+#
+# If multiple releases/hotfixes land quickly, the same PR is updated.
+# ==============================
+
+name: Sync main to develop
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
-  contents: write # needed to push the sync branch
-  pull-requests: write # needed to open/edit PRs
+  contents: write
+  pull-requests: write
+  actions: read
 
+# Only one sync job at a time; cancel in-progress on new pushes
 concurrency:
   group: sync-main-to-develop
   cancel-in-progress: true
 
 jobs:
-  open-sync-pr:
+  sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Configure git
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Fetch branches
-        run: |
-          git fetch origin +refs/heads/main:refs/remotes/origin/main
-          git fetch origin +refs/heads/develop:refs/remotes/origin/develop || echo "No develop branch yet"
-
-      - name: Create/update sync branch at main tip
-        run: |
-          git checkout origin/main
-          git push --force --set-upstream origin main
-
-      - name: Open PR (or reuse existing)
+      - name: Compute sync metadata
+        id: syncmeta
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          # If an open PR from main → develop already exists, do nothing.
-          existing_count=$(gh pr list --base develop --head main --state open --json number --jq 'length' || echo 0)
-          if [ "$existing_count" -gt 0 ]; then
-            echo "A sync PR is already open; branch was force-pushed with latest main."
-            exit 0
+          set -euo pipefail
+          SYNC_BRANCH='sync/main-to-develop'
+
+          # Short SHA 7 chars) for traceability
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            git fetch --quiet origin main
+            SHORT_SHA="$(git rev-parse --short=7 origin/main)"
+          else
+            SHORT_SHA="${GITHUB_SHA:0:7}"
           fi
 
-          gh pr create \
-            --base develop \
-            --head main \
-            --title "Sync main → develop" \
-            --body "Automated PR to merge changes from \`main\` into \`develop\` after a push to \`main\`."
+          echo "SYNC_BRANCH=${SYNC_BRANCH}" >> "${GITHUB_OUTPUT}"
+          echo "SHORT_SHA=${SHORT_SHA}"     >> "${GITHUB_OUTPUT}"
 
-          # Optional niceties:
-          # gh pr edit --add-label "sync"
-          # gh pr edit --add-reviewer your-github-handle
-          # If 'Require linear history' on develop, consider enabling auto-merge with rebase:
-          # gh pr merge --auto --rebase
-
-      - name: Enable auto-merge if conflict-free
+      # NEW: rolling branch force-update (critical)
+      - name: Create or refresh sync branch from main (force-update)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ steps.openpr.outputs.pr_number }}
+          SYNC_BRANCH: ${{ steps.syncmeta.outputs.SYNC_BRANCH }}
         run: |
-          # Poll until GitHub computes mergeability (can be "UNKNOWN" briefly)
-          tries=0
-          state="UNKNOWN"
-          while [ $tries -lt 10 ]; do
-            state=$(gh pr view "$PR" --json mergeable --jq '.mergeable' || echo "UNKNOWN")
-            # Possible values: MERGEABLE, CONFLICTING, UNKNOWN
-            [ "$state" != "UNKNOWN" ] && break
-            sleep 3
-            tries=$((tries+1))
+          set -euo pipefail
+          git fetch --quiet origin main
+          echo "Force-updating remote ${SYNC_BRANCH} to match origin/main"
+          git checkout -B "${SYNC_BRANCH}" origin/main
+          git push -u --force-with-lease origin "${SYNC_BRANCH}"
+
+      # NEW: wait until head is visible; verify base; compute diff
+      - name: (Preflight) ensure head exists & compute diff
+        env:
+          SYNC_BRANCH: ${{ steps.syncmeta.outputs.SYNC_BRANCH }}
+          GH_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          REPO:        ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # 1) Wait for head ref to be visible via API (avoids "Head sha can't be blank")
+          for i in {1..20}; do
+            if gh api "repos/${REPO}/git/ref/heads/${SYNC_BRANCH}" >/dev/null 2>&1; then
+              break
+            fi
+            echo "Head ref not visible yet; retrying (${i}/20)…"
+            sleep 2
           done
 
-          echo "Mergeable state: $state"
-          if [ "$state" = "CONFLICTING" ]; then
-            echo "PR has conflicts; leaving it open for manual resolution."
-            exit 0
-          fi
+          # 2) Verify base branch exists (avoids "Base sha can't be blank")
+          gh api "repos/${REPO}/branches/develop" >/dev/null
 
-          # Try to enable auto-merge with rebase. This will wait until checks/approvals are satisfied.
-          # Requires repo setting "Allow auto-merge".
-          if gh pr merge "$PR" --auto --rebase; then
-            echo "Auto-merge enabled (rebase)."
-            exit 0
-          fi
-
-          # Fallback: if auto-merge isn't allowed but PR is clean & meets requirements, merge immediately.
-          # We'll check a richer state to avoid merging when still blocked by protections.
-          mergeState=$(gh pr view "$PR" --json mergeStateStatus --jq '.mergeStateStatus' || echo "")
-          echo "mergeStateStatus: $mergeState"
-          if [ "$mergeState" = "CLEAN" ]; then
-            gh pr merge "$PR" --rebase --delete-branch
-            echo "Merged immediately (rebase)."
+          # 3) Compute ahead_by; skip PR when no diff (avoids "No commits between …")
+          AHEAD="$(gh api "repos/${REPO}/compare/develop...${SYNC_BRANCH}" --jq '.ahead_by' 2>/dev/null || echo 0)"
+          echo "AHEAD=${AHEAD}"
+          if [ "${AHEAD}" -gt 0 ]; then
+            echo "HAS_DIFF=true"  >> "${GITHUB_ENV}"
           else
-            echo "PR not ready for immediate merge; leaving it open."
+            echo "HAS_DIFF=false" >> "${GITHUB_ENV}"
           fi
+
+      - name: Open (or reuse) PR to sync main to develop
+        if: env.HAS_DIFF == 'true'
+        env:
+          SYNC_BRANCH: ${{ steps.syncmeta.outputs.SYNC_BRANCH }}
+          SHORT_SHA:   ${{ steps.syncmeta.outputs.SHORT_SHA }}
+          GH_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          REPO:        ${{ github.repository }}
+          BEFORE:      ${{ github.event.before }}   # empty for workflow_dispatch
+          AFTER:       ${{ github.sha }}            # pushed SHA on main
+        run: |
+          set -euo pipefail
+
+          BODY_FILE="${RUNNER_TEMP}/sync_pr_body.md"
+          REPO_URL="https://github.com/${REPO}"
+          : > "${BODY_FILE}"
+
+          # Header
+          echo "Automated PR to sync **main** into **develop**." >> "${BODY_FILE}"
+          echo "" >> "${BODY_FILE}"
+
+          # ==== Latest on main: prefer PR title (#N); else commit subject + short SHA link
+          LATEST_LINE=""
+          if [ -n "${AFTER:-}" ]; then
+            PR_JSON="$(gh api "repos/${REPO}/commits/${AFTER}/pulls" \
+                        -H "Accept: application/vnd.github.groot-preview+json" 2>/dev/null || true)"
+            PR_NUM="$(echo "${PR_JSON}" | jq -r '.[0].number // empty')"
+            if [ -n "${PR_NUM}" ]; then
+              PR_TITLE="$(echo "${PR_JSON}" | jq -r '.[0].title')"
+              LATEST_LINE="Latest on main: Merge pull request ${PR_TITLE} ([#${PR_NUM}](${REPO_URL}/pull/${PR_NUM}))"
+            else
+              SUBJECT="$(gh api "repos/${REPO}/commits/${AFTER}" --jq '.commit.message | split("\n")[0]' 2>/dev/null || true)"
+              SHORT_AFTER7="${AFTER:0:7}"
+              if [ -n "${SUBJECT}" ]; then
+                LATEST_LINE="Latest on main: ${SUBJECT} ([${SHORT_AFTER7}](${REPO_URL}/commit/${AFTER}))"
+              else
+                LATEST_LINE="Latest on main: [${SHORT_AFTER7}](${REPO_URL}/commit/${AFTER})"
+              fi
+            fi
+          fi
+          [ -n "${LATEST_LINE}" ] && echo "${LATEST_LINE}" >> "${BODY_FILE}"
+
+          # ==== Full Changelog link (only when BEFORE is present)
+          if [ -n "${BEFORE:-}" ] && [ -n "${AFTER:-}" ]; then
+            echo "" >> "${BODY_FILE}"
+            SHORT_BEFORE7="${BEFORE:0:7}"
+            SHORT_AFTER7="${AFTER:0:7}"
+            echo "Full Changelog: [${SHORT_BEFORE7}...${SHORT_AFTER7}](${REPO_URL}/compare/${BEFORE}...${AFTER})" >> "${BODY_FILE}"
+          fi
+
+          # Open or reuse the PR
+          EXISTING="$(gh pr list --repo "${REPO}" --base develop --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number // empty')"
+
+          if [ -n "${EXISTING}" ]; then
+            PR_NUMBER="${EXISTING}"
+            gh pr edit "${PR_NUMBER}" --repo "${REPO}" \
+              --title "Sync main -> develop (${SHORT_SHA})" \
+              --body-file "${BODY_FILE}"
+          else
+            gh pr create \
+              --repo  "${REPO}" \
+              --base  develop \
+              --head  "${SYNC_BRANCH}" \
+              --title "Sync main -> develop (${SHORT_SHA})" \
+              --body-file "${BODY_FILE}"
+            PR_NUMBER="$(gh pr list --repo "${REPO}" --base develop --head "${SYNC_BRANCH}" --state open --json number --jq '.[0].number')"
+          fi
+
+          echo "PR_NUMBER=${PR_NUMBER}" >> "${GITHUB_ENV}"
+
+      - name: Wait for mergeability to be confirmed (avoid UNSTABLE/UNKNOWN flakey states)
+        if: env.HAS_DIFF == 'true' && env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for i in {1..24}; do
+            state=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergeStateStatus --jq .mergeStateStatus)
+            echo "mergeStateStatus=$state"
+            [[ "$state" =~ ^(UNKNOWN|UNSTABLE)$ ]] && sleep 5 || break
+          done
+
+      - name: Enable auto-merge (merge commit) with retry
+        if: env.HAS_DIFF == 'true' && env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for i in {1..6}; do
+            if gh pr merge "$PR_NUMBER" --repo "$REPO" --merge --auto; then
+              echo "Auto-merge enabled (merge commit)."
+              exit 0
+            fi
+            echo "Auto-merge not enableable yet (attempt $i); retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::Failed to enable auto-merge after retries."
+          exit 1
