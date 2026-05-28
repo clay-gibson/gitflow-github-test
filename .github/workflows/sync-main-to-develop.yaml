@@ -1,6 +1,6 @@
 # ==============================
 # Sync main branch to develop branch
-#
+# 
 # Every release or hotfix merged into main will
 # auto-create one rolling sync PR and
 # arm auto-merge to merge commit to develop.
@@ -18,7 +18,7 @@ name: Sync main to develop
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -73,8 +73,8 @@ jobs:
       - name: (Preflight) ensure head exists & compute diff
         env:
           SYNC_BRANCH: ${{ steps.syncmeta.outputs.SYNC_BRANCH }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
+          GH_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          REPO:        ${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -103,11 +103,11 @@ jobs:
         if: env.HAS_DIFF == 'true'
         env:
           SYNC_BRANCH: ${{ steps.syncmeta.outputs.SYNC_BRANCH }}
-          SHORT_SHA: ${{ steps.syncmeta.outputs.SHORT_SHA }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          BEFORE: ${{ github.event.before }} # empty for workflow_dispatch
-          AFTER: ${{ github.sha }} # pushed SHA on main
+          SHORT_SHA:   ${{ steps.syncmeta.outputs.SHORT_SHA }}
+          GH_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          REPO:        ${{ github.repository }}
+          BEFORE:      ${{ github.event.before }}   # empty for workflow_dispatch
+          AFTER:       ${{ github.sha }}            # pushed SHA on main
         run: |
           set -euo pipefail
 
@@ -117,8 +117,6 @@ jobs:
 
           # Header
           echo "Automated PR to sync **main** into **develop**." >> "${BODY_FILE}"
-          echo "" >> "${BODY_FILE}"
-          echo "⚠️ This PR should be merged (not squashed) to keep history intact." >> "${BODY_FILE}"
           echo "" >> "${BODY_FILE}"
 
           # ==== Latest on main: prefer PR title (#N); else commit subject + short SHA link
@@ -169,10 +167,34 @@ jobs:
           fi
 
           echo "PR_NUMBER=${PR_NUMBER}" >> "${GITHUB_ENV}"
-            - name: Enable auto-merge
+
+      - name: Wait for mergeability to be confirmed (avoid UNSTABLE/UNKNOWN flakey states)
         if: env.HAS_DIFF == 'true' && env.PR_NUMBER != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --merge --auto
+          set -euo pipefail
+          for i in {1..24}; do
+            state=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergeStateStatus --jq .mergeStateStatus)
+            echo "mergeStateStatus=$state"
+            [[ "$state" =~ ^(UNKNOWN|UNSTABLE)$ ]] && sleep 5 || break
+          done
+
+      - name: Enable auto-merge (merge commit) with retry
+        if: env.HAS_DIFF == 'true' && env.PR_NUMBER != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for i in {1..6}; do
+            if gh pr merge "$PR_NUMBER" --repo "$REPO" --merge --auto; then
+              echo "Auto-merge enabled (merge commit)."
+              exit 0
+            fi
+            echo "Auto-merge not enableable yet (attempt $i); retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::Failed to enable auto-merge after retries."
+          exit 1
