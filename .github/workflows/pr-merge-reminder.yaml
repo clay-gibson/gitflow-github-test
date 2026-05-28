@@ -1,0 +1,25 @@
+name: PR Merge Reminder
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  remind-squash:
+    if: >-
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.base.ref == 'develop' &&
+      github.event.pull_request.head.ref != 'main' &&
+      !startsWith(github.event.pull_request.head.ref, 'sync/')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remind to squash merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr comment "$PR" --repo "$REPO" --body \
+            "🚨 **Approved!** Please use **Squash and merge** when merging this PR into \`develop\`."
